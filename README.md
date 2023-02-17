@@ -1,5 +1,9 @@
 # <p align=center>`Doc2Graph`</p> 
 
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/doc2graph-a-task-agnostic-document/entity-linking-on-funsd)](https://paperswithcode.com/sota/entity-linking-on-funsd?p=doc2graph-a-task-agnostic-document) [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/doc2graph-a-task-agnostic-document/semantic-entity-labeling-on-funsd)](https://paperswithcode.com/sota/semantic-entity-labeling-on-funsd?p=doc2graph-a-task-agnostic-document)
+
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54) ![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=for-the-badge&logo=PyTorch&logoColor=white)
+
 This library is the implementation of the paper [Doc2Graph: a Task Agnostic Document Understanding Framework based on Graph Neural Networks](https://arxiv.org/abs/2208.11168), accepted at [TiE @ ECCV 2022](https://sites.google.com/view/tie-eccv2022/accepted-papers?authuser=0).
 
 The model and pipeline aims at being task-agnostic on the domain of Document Understanding. It is an ongoing project, these are the steps already achieved and the ones we would like to implement in the future:
@@ -23,18 +27,19 @@ Roadmap:
 Setup the initial conda environment
 
 ```
-conda create -n doc2graph python=3.9 ipython cudatoolkit=11.3 -c anaconda
-conda activate doc2graph
+conda create -n doc2graph python=3.9 ipython cudatoolkit=11.3 -c anaconda &&
+conda activate doc2graph &&
 cd doc2graph
 ```
 
 Then, install [setuptools-git-versioning](https://pypi.org/project/setuptools-git-versioning/) and doc2graph package itself. The following has been tested only on linux: for different OS installations refer directly to [PyTorch](https://pytorch.org/get-started/previous-versions/) and [DGL](https://www.dgl.ai/pages/start.html) original documentation.
 
 ```
-pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cu113
-pip install dgl-cu113 dglgo -f https://data.dgl.ai/wheels/repo.html
-pip install setuptools-git-versioning && pip install -e .
-python -m spacy download en_core_web_lg
+pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 --extra-index-url &&
+https://download.pytorch.org/whl/cu113 &&
+pip install dgl-cu113 dglgo -f https://data.dgl.ai/wheels/repo.html &&
+pip install setuptools-git-versioning && pip install -e . &&
+pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.3.0/en_core_web_lg-3.3.0.tar.gz
 ```
 
 Finally, create the project folder structure and download data:
@@ -117,14 +122,22 @@ python src/main.py -addG -addT -addE -addV --gpu 0 --test --weights e2e-pau-best
 ## Cite this project
 If you want to use our code in your project(s), please cite us:
 ```
-@misc{https://doi.org/10.48550/arxiv.2208.11168,
-  doi = {10.48550/ARXIV.2208.11168},
-  url = {https://arxiv.org/abs/2208.11168},
-  author = {Gemelli, Andrea and Biswas, Sanket and Civitelli, Enrico and Lladós, Josep and Marinai, Simone},
-  keywords = {Computer Vision and Pattern Recognition (cs.CV), FOS: Computer and information sciences, FOS: Computer and information sciences},
-  title = {Doc2Graph: a Task Agnostic Document Understanding Framework based on Graph Neural Networks},
-  publisher = {arXiv},
-  year = {2022},
-  copyright = {Creative Commons Attribution Share Alike 4.0 International}
+@InProceedings{10.1007/978-3-031-25069-9_22,
+author="Gemelli, Andrea
+and Biswas, Sanket
+and Civitelli, Enrico
+and Llad{\'o}s, Josep
+and Marinai, Simone",
+editor="Karlinsky, Leonid
+and Michaeli, Tomer
+and Nishino, Ko",
+title="Doc2Graph: A Task Agnostic Document Understanding Framework Based on Graph Neural Networks",
+booktitle="Computer Vision -- ECCV 2022 Workshops",
+year="2023",
+publisher="Springer Nature Switzerland",
+address="Cham",
+pages="329--344",
+abstract="Geometric Deep Learning has recently attracted significant interest in a wide range of machine learning fields, including document analysis. The application of Graph Neural Networks (GNNs) has become crucial in various document-related tasks since they can unravel important structural patterns, fundamental in key information extraction processes. Previous works in the literature propose task-driven models and do not take into account the full power of graphs. We propose Doc2Graph, a task-agnostic document understanding framework based on a GNN model, to solve different tasks given different types of documents. We evaluated our approach on two challenging datasets for key information extraction in form understanding, invoice layout analysis and table detection. Our code is freely accessible on https://github.com/andreagemelli/doc2graph.",
+isbn="978-3-031-25069-9"
 }
 ```
