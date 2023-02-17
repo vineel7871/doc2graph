@@ -1,5 +1,6 @@
 import json
 import os
+from uuid import uuid3
 from PIL import Image, ImageDraw
 from typing import Tuple
 import torch
@@ -7,7 +8,9 @@ import dgl
 import random
 import numpy as np
 from tqdm import tqdm
+import pdfplumber
 import xml.etree.ElementTree as ET
+from math import ceil, floor
 
 from src.data.preprocessing import load_predictions
 from src.data.utils import polar
@@ -24,22 +27,24 @@ class GraphBuilder():
         self.node_granularity = self.cfg_preprocessing.GRAPHS.node_granularity
         random.seed = 42
         return
-    
+
     def get_graph(self, src_path : str, src_data : str) -> Tuple[list, list, list, list]:
         """ Given the source, it returns a graph
 
         Args:
             src_path (str) : path to source data
             src_data (str) : either FUNSD, PAU or CUSTOM
-        
+
         Returns:
             tuple (lists) : graphs, nodes and edge labels, features
         """
-        
+
         if src_data == 'FUNSD':
             return self.__fromFUNSD(src_path)
         elif src_data == 'PAU':
             return self.__fromPAU(src_path)
+        elif src_data == "DocLayNet":
+            return self.__fromPDF(src_path)
         elif src_data == 'CUSTOM':
             if self.data_type == 'img':
                 return self.__fromIMG()
@@ -49,18 +54,18 @@ class GraphBuilder():
                 raise Exception('GraphBuilder exception: data type invalid. Choose from ["img", "pdf"]')
         else:
             raise Exception('GraphBuilder exception: source data invalid. Choose from ["FUNSD", "PAU", "CUSTOM"]')
-    
+
     def balance_edges(self, g : dgl.DGLGraph, cls=None ) -> dgl.DGLGraph:
         """ if cls (class) is not None, but an integer instead, balance that class to be equal to the sum of the other classes
 
         Args:
             g (DGLGraph) : a DGL graph
             cls (int) : class number, if any
-        
+
         Returns:
             g (DGLGraph) : the new balanced graph
         """
-        
+
         edge_targets = g.edata['label']
         u, v = g.all_edges(form='uv')
         edges_list = list()
@@ -81,10 +86,10 @@ class GraphBuilder():
             indices_to_remove = torch.flatten(torch.tensor(indices_to_remove, dtype=torch.int32))
             g = dgl.remove_edges(g, indices_to_remove)
             return g
-            
+
         else:
             raise Exception("Select a class to balance (an integer ranging from 0 to num_edge_classes).")
-    
+
     def get_info(self):
         """ returns graph information
         """
@@ -95,7 +100,7 @@ class GraphBuilder():
 
         Args:
             ids (list) : list of node indices
-        
+
         Returns:
             u, v (lists) : lists of indices
         """
@@ -104,7 +109,7 @@ class GraphBuilder():
             u.extend([id for i in range(len(ids)) if i != id])
             v.extend([i for i in range(len(ids)) if i != id])
         return u, v
-    
+
     def __knn(self, size : tuple, bboxs : list, k = 10) -> Tuple[list, list]:
         """ Given a list of bounding boxes, find for each of them their k nearest ones.
 
@@ -112,14 +117,14 @@ class GraphBuilder():
             size (tuple) : width and height of the image
             bboxs (list) : list of bounding box coordinates
             k (int) : k of the knn algorithm
-        
+
         Returns:
             u, v (lists) : lists of indices
         """
 
         edges = []
         width, height = size[0], size[1]
-        
+
         # creating projections
         vertical_projections = [[] for i in range(width)]
         horizontal_projections = [[] for i in range(height)]
@@ -130,7 +135,7 @@ class GraphBuilder():
             for vp in range(bbox[1], bbox[3]):
                 if vp >= height: vp = height - 1
                 horizontal_projections[vp].append(node_index)
-        
+
         def bound(a, ori=''):
             if a < 0 : return 0
             elif ori == 'h' and a > height: return height
@@ -141,34 +146,34 @@ class GraphBuilder():
             neighbors = [] # collect list of neighbors
             window_multiplier = 2 # how much to look around bbox
             wider = (node_bbox[2] - node_bbox[0]) > (node_bbox[3] - node_bbox[1]) # if bbox wider than taller
-            
+
             ### finding neighbors ###
             while(len(neighbors) < k and window_multiplier < 100): # keep enlarging the window until at least k bboxs are found or window too big
                 vertical_bboxs = []
                 horizontal_bboxs = []
                 neighbors = []
-                
+
                 if wider:
                     h_offset = int((node_bbox[2] - node_bbox[0]) * window_multiplier/4)
                     v_offset = int((node_bbox[3] - node_bbox[1]) * window_multiplier)
                 else:
                     h_offset = int((node_bbox[2] - node_bbox[0]) * window_multiplier)
                     v_offset = int((node_bbox[3] - node_bbox[1]) * window_multiplier/4)
-                
+
                 window = [bound(node_bbox[0] - h_offset),
                         bound(node_bbox[1] - v_offset),
                         bound(node_bbox[2] + h_offset, 'w'),
-                        bound(node_bbox[3] + v_offset, 'h')] 
-                
+                        bound(node_bbox[3] + v_offset, 'h')]
+
                 [vertical_bboxs.extend(d) for d in vertical_projections[window[0]:window[2]]]
                 [horizontal_bboxs.extend(d) for d in horizontal_projections[window[1]:window[3]]]
-                
+
                 for v in set(vertical_bboxs):
                     for h in set(horizontal_bboxs):
                         if v == h: neighbors.append(v)
-                
+
                 window_multiplier += 1 # enlarge the window
-            
+
             ### finding k nearest neighbors ###
             neighbors = list(set(neighbors))
             if node_index in neighbors:
@@ -186,17 +191,116 @@ class GraphBuilder():
     def __fromIMG():
         #TODO: dev from IMG import of graphs
         return
-    
-    def __fromPDF():
+
+    def __fromPDF(self, src:str):
         #TODO: dev from PDF import of graphs
-        return
+        graphs, node_labels, edge_labels = list(), list(), list()
+        features = {'paths': [], 'texts': [], 'boxs': []}
+
+        for file in tqdm(os.listdir(os.path.join(src, 'json')), desc='Creating graphs - GT'):
+            if (file.endswith("json")):
+                try:
+                    page_hash = file.split(".")[0]
+
+                    img_name = f'{file.split(".")[0]}.png'
+                    img_path = os.path.join(src, 'png', img_name)
+
+                    with open(os.path.join(src, 'json', file), 'r') as f:
+                        data = json.loads(f.read())
+
+                    boxs, texts, ids, nl = list(), list(), list(), list()
+                    pair_labels = list()
+
+                    pdf_name = f'{file.split(".")[0]}.pdf'
+                    pdf_path = os.path.join(src, 'pdf', pdf_name)
+                    pdf = pdfplumber.open(pdf_path)
+                    page = pdf.pages[0]
+
+                    bbox_set = set()
+
+                    for i, x in enumerate(data["bboxes_block"]):
+                        if tuple(x) not in bbox_set:
+                            if (data["categories"][i]!=6):
+                                bbox_set.add(tuple(x))
+                                bbox = x.copy()
+                                w = data["original_width"]
+                                h = data["original_height"]
+                                wm = w/1025
+                                hm = h/1025
+
+                                bbox[2] += bbox[0]
+                                bbox[3] += bbox[1]
+
+                                bbox[0] *= wm
+                                bbox[2] *= wm
+                                bbox[1] *= hm
+                                bbox[3] *= hm
+
+                                for j, word in enumerate(page.crop(bbox, strict=True).extract_words()):
+
+                                    boxs.append((floor(word["x0"] * 1025 / w), floor(word["top"] * 1025 / h), floor(
+                                        word["x1"] * 1025 / w), floor(word["bottom"] * 1025 / h)))
+                                    texts.append(word["text"])
+                                    ids.append(f'{file.split(".")[0]}_{len(bbox_set)}_{j}')
+                                    nl.append(data["categories"][i])
+                            else:
+                                bbox_set.add(tuple(x))
+                                bbox = x.copy()
+                                w = data["original_width"]
+                                h = data["original_height"]
+                                wm = w/1025
+                                hm = h/1025
+
+                                bbox[2] += bbox[0]
+                                bbox[3] += bbox[1]
+
+                                bbox[0] *= wm
+                                bbox[2] *= wm
+                                bbox[1] *= hm
+                                bbox[3] *= hm
+
+                                boxs.append((floor(word["x0"] * 1025 / w), floor(word["top"] * 1025 / h), floor(
+                                    word["x1"] * 1025 / w), floor(word["bottom"] * 1025 / h)))
+                                texts.append("image")
+                                ids.append(
+                                    f'{file.split(".")[0]}_{len(bbox_set)}_0')
+                                nl.append(data["categories"][i])
+
+                    features['paths'].append(img_path)
+                    node_labels.append(nl)
+                    features['texts'].append(texts)
+                    features['boxs'].append(boxs)
+
+                    if self.edge_type == 'fully':
+                        u, v = self.fully_connected(range(len(boxs)))
+                    elif self.edge_type == 'knn':
+                        u, v = self.__knn(Image.open(img_path).size, boxs)
+                    else:
+                        raise Exception('GraphBuilder exception: Other edge types still under development.')
+
+                    el = list()
+                    for e in zip(u, v):
+                        edge = [e[0], e[1]]
+                        if edge in pair_labels:
+                            el.append('pair')
+                        else: el.append('none')
+                    edge_labels.append(el)
+
+                    g = dgl.graph((torch.tensor(u), torch.tensor(v)),
+                                num_nodes=len(boxs), idtype=torch.int32)
+                    graphs.append(g)
+                except Exception as e:
+                    print("error for file", file)
+                    print(e)
+
+        return graphs, node_labels, edge_labels, features
 
     def __fromPAU(self, src: str) -> Tuple[list, list, list, list]:
         """ build graphs from Pau Riba's dataset
 
         Args:
             src (str) : path to where data is stored
-        
+
         Returns:
             tuple (lists) : graphs, nodes and edge labels, features
         """
@@ -206,11 +310,11 @@ class GraphBuilder():
 
         for image in tqdm(os.listdir(src), desc='Creating graphs'):
             if not image.endswith('tif'): continue
-            
+
             img_name = image.split('.')[0]
             file_gt = img_name + '_gt.xml'
             file_ocr = img_name + '_ocr.xml'
-            
+
             if not os.path.isfile(os.path.join(src, file_gt)) or not os.path.isfile(os.path.join(src, file_ocr)): continue
             features['paths'].append(os.path.join(src, image))
 
@@ -255,7 +359,7 @@ class GraphBuilder():
                                             tokens_bbox.append(word_bbox)
                                             tokens_text.append(word_text)
                                             nl.append(word_label)
-            
+
             features['boxs'].append(tokens_bbox)
             features['texts'].append(tokens_text)
             node_labels.append(nl)
@@ -263,11 +367,11 @@ class GraphBuilder():
             # getting edges
             if self.edge_type == 'fully':
                 u, v = self.fully_connected(range(len(tokens_bbox)))
-            elif self.edge_type == 'knn': 
+            elif self.edge_type == 'knn':
                 u,v = self.__knn(Image.open(os.path.join(src, image)).size, tokens_bbox)
             else:
                 raise Exception('Other edge types still under development.')
-            
+
             el = list()
             for e in zip(u, v):
                 if (nl[e[0]] == nl[e[1]]) and (nl[e[0]] == 'positions' or nl[e[0]] == 'total'):
@@ -277,7 +381,7 @@ class GraphBuilder():
 
             g = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=len(tokens_bbox), idtype=torch.int32)
             graphs.append(g)
-        
+
         return graphs, node_labels, edge_labels, features
 
     def __fromFUNSD(self, src : str) -> Tuple[list, list, list, list]:
@@ -285,7 +389,7 @@ class GraphBuilder():
 
         Args:
             src (str) : path to where data is stored
-        
+
         Returns:
             tuple (lists) : graphs, nodes and edge labels, features
         """
@@ -293,10 +397,10 @@ class GraphBuilder():
         graphs, node_labels, edge_labels = list(), list(), list()
         features = {'paths': [], 'texts': [], 'boxs': []}
         # justOne = random.choice(os.listdir(os.path.join(src, 'adjusted_annotations'))).split(".")[0]
-        
+
         if self.node_granularity == 'gt':
             for file in tqdm(os.listdir(os.path.join(src, 'adjusted_annotations')), desc='Creating graphs - GT'):
-            
+
                 img_name = f'{file.split(".")[0]}.png'
                 img_path = os.path.join(src, 'images', img_name)
                 features['paths'].append(img_path)
@@ -314,22 +418,22 @@ class GraphBuilder():
                     nl.append(elem['label'])
                     ids.append(elem['id'])
                     [pair_labels.append(pair) for pair in elem['linking']]
-                
+
                 for p, pair in enumerate(pair_labels):
                     pair_labels[p] = [ids.index(pair[0]), ids.index(pair[1])]
-                
+
                 node_labels.append(nl)
                 features['texts'].append(texts)
                 features['boxs'].append(boxs)
-                
+
                 # getting edges
                 if self.edge_type == 'fully':
                     u, v = self.fully_connected(range(len(boxs)))
-                elif self.edge_type == 'knn': 
+                elif self.edge_type == 'knn':
                     u,v = self.__knn(Image.open(img_path).size, boxs)
                 else:
                     raise Exception('GraphBuilder exception: Other edge types still under development.')
-                
+
                 el = list()
                 for e in zip(u, v):
                     edge = [e[0], e[1]]
@@ -378,16 +482,16 @@ class GraphBuilder():
                     for p, pair in enumerate(zip(u,v)):
                         sc = center(boxs[pair[0]])
                         ec = center(boxs[pair[1]])
-                        if labels[p] == int(np.where('pair' == edge_unique_labels)[0][0]): 
+                        if labels[p] == int(np.where('pair' == edge_unique_labels)[0][0]):
                             num_pair += 1
                             color = 'violet'
                             draw_removed.ellipse([(sc[0]-4,sc[1]-4), (sc[0]+4,sc[1]+4)], fill = 'green', outline='black')
                             draw_removed.ellipse([(ec[0]-4,ec[1]-4), (ec[0]+4,ec[1]+4)], fill = 'red', outline='black')
-                        else: 
+                        else:
                             num_none += 1
                             color='gray'
                         draw_removed.line((sc,ec), fill=color, width=3)
-                    
+
                     print("Balanced Links: None {} | Key-Value {}".format(num_none, num_pair))
                     img_removed.save(f'esempi/FUNSD/{img_name}_removed_graph.png')
 
@@ -397,7 +501,7 @@ class GraphBuilder():
             path_gts = os.path.join(src, 'adjusted_annotations')
             all_paths, all_preds, all_links, all_labels, all_texts = load_predictions(path_preds, path_gts, path_images)
             for f, img_path in enumerate(tqdm(all_paths, desc='Creating graphs - YOLO')):
-            
+
                 features['paths'].append(img_path)
                 features['boxs'].append(all_preds[f])
                 features['texts'].append(all_texts[f])
@@ -407,11 +511,11 @@ class GraphBuilder():
                 # getting edges
                 if self.edge_type == 'fully':
                     u, v = self.fully_connected(range(len(features['boxs'][f])))
-                elif self.edge_type == 'knn': 
+                elif self.edge_type == 'knn':
                     u,v = self.__knn(Image.open(img_path).size, features['boxs'][f])
                 else:
                     raise Exception('GraphBuilder exception: Other edge types still under development.')
-                
+
                 el = list()
                 for e in zip(u, v):
                     edge = [e[0], e[1]]

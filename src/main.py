@@ -4,6 +4,7 @@ from src.data.download import get_data
 from src.training.funsd import train_funsd
 from src.utils import project_tree, set_preprocessing
 from src.training.pau import train_pau
+from src.training.doclaynet import train_doclaynet
 
 def main():
     parser = argparse.ArgumentParser(description='Training')
@@ -11,7 +12,7 @@ def main():
     # init
     parser.add_argument('--init', action="store_true",
                         help="download data and prepare folders")
-    
+
     # features
     parser.add_argument('--add-geom', '-addG', action="store_true",
                         help="add geometrical features to nodes")
@@ -45,7 +46,7 @@ def main():
                         help="skip training")
     parser.add_argument('--weights', '-w', nargs='+', type=str, default=None,
                         help="provide a weights file relative path if testing")
-         
+
     args = parser.parse_args()
     print(args)
 
@@ -62,14 +63,15 @@ def main():
             train_funsd(args)
         elif args.src_data == 'PAU':
             train_pau(args)
+        elif args.src_data == 'DocLayNet':
+            train_doclaynet(args)
         elif args.src_data == 'CUSTOM':
             #TODO develop custom data preprocessing
             raise Exception('Main exception: "CUSTOM" source data still under development')
         else:
             raise Exception('Main exception: source data invalid. Choose from ["FUNSD", "PAU", "CUSTOM"]')
-    
+
     return
 
 if __name__ == '__main__':
     main()
-    

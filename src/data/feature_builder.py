@@ -36,19 +36,22 @@ class FeatureBuilder():
 
         if self.add_visual:
             self.visual_embedder = Unet(encoder_name="mobilenet_v2", encoder_weights=None, in_channels=1, classes=4)
-            self.visual_embedder.load_state_dict(torch.load(CHECKPOINTS / 'backbone_unet.pth')['weights'])
+            self.visual_embedder.load_state_dict(torch.load(
+                CHECKPOINTS / 'backbone_unet.pth', torch.device('cpu'))['weights'])
             self.visual_embedder = self.visual_embedder.encoder
             self.visual_embedder.to(d)
-        
-        self.sg = lambda rect, s : [rect[0]/s[0], rect[1]/s[1], rect[2]/s[0], rect[3]/s[1]] # scaling by img width and height
-    
+
+    def sg(self, rect, s):
+        # scaling by img width and height
+        return [rect[0]/s[0], rect[1]/s[1], rect[2]/s[0], rect[3]/s[1]]
+
     def add_features(self, graphs : list, features : list) -> Tuple[list, int]:
         """ Add features to provided graphs
 
         Args:
             graphs (list) : list of DGLGraphs
             features (list) : list of features "sources", like text, positions and images
-        
+
         Returns:
             chunks list and its lenght
         """
@@ -63,24 +66,24 @@ class FeatureBuilder():
 
             # 'geometrical' features
             if self.add_geom:
-                
+
                 # TODO add 2d encoding like "LayoutLM*"
                 [feats[idx].extend(self.sg(box, size)) for idx, box in enumerate(features['boxs'][id])]
                 chunks.append(4)
-            
+
             # HISTOGRAM OF TEXT
             if self.add_hist:
-                
+
                 [feats[idx].extend(hist) for idx, hist in enumerate(get_histogram(features['texts'][id]))]
                 chunks.append(4)
-            
+
             # textual features
             if self.add_embs:
-                
+
                 # LANGUAGE MODEL (SPACY)
                 [feats[idx].extend(self.text_embedder(features['texts'][id][idx]).vector) for idx, _ in enumerate(feats)]
                 chunks.append(len(self.text_embedder(features['texts'][id][0]).vector))
-            
+
             # visual features
             # https://pytorch.org/vision/stable/generated/torchvision.ops.roi_align.html?highlight=roi
             if self.add_visual:
@@ -94,7 +97,7 @@ class FeatureBuilder():
                 # VISUAL FEATURES (RESNET-IMAGENET)
                 [feats[idx].extend(torch.flatten(h[idx]).tolist()) for idx, _ in enumerate(feats)]
                 chunks.append(len(torch.flatten(h[0]).tolist()))
-        
+
             if self.add_eweights:
                 u, v = g.edges()
                 srcs, dsts =  u.tolist(), v.tolist()
@@ -105,12 +108,12 @@ class FeatureBuilder():
                 #! with fully connected simply normalized with max distance between distances
                 # m = sqrt((size[0]*size[0] + size[1]*size[1]))
                 # parable = lambda x : (-x+1)**4
-                
+
                 for pair in zip(srcs, dsts):
                     dist, angle = polar(features['boxs'][id][pair[0]], features['boxs'][id][pair[1]])
                     distances.append(dist)
                     angles.append(angle)
-                
+
                 m = max(distances)
                 polar_coordinates = to_bin(distances, angles, self.num_polar_bins)
                 g.edata['feat'] = polar_coordinates
@@ -154,12 +157,12 @@ class FeatureBuilder():
                             draw.text(middle_point, str(angles[p]), fill='black')
                             draw.rectangle(features['boxs'][id][pair[0]], fill='red')
                             draw.rectangle(features['boxs'][id][pair[1]], fill='blue')
-                    
+
                     img.save(f'esempi/FUNSD/edges.png')
 
         return chunks, len(chunks)
-    
+
     def get_info(self):
         print(f"-> textual feats: {self.add_embs}\n-> visual feats: {self.add_visual}\n-> edge feats: {self.add_eweights}")
 
-    
+

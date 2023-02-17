@@ -8,12 +8,12 @@ from src.paths import CFGM
 from src.utils import get_config
 
 class SetModel():
-    def __init__(self, name='e2e', device = 'cpu'):
+    def __init__(self, name='e2e', device = torch.device('cpu')):
         """ Create a SetModel object, that handles dinamically different version of Doc2Graph Model. Default "end-to-end" (e2e)
 
         Args:
             name (str) : Which model to train / test. Default: e2e [gcn, edge].
-        
+
         Returns:
             SetModel object.
         """
@@ -22,12 +22,12 @@ class SetModel():
         self.name = self.cfg_model.name
         self.total_params = 0
         self.device = device
-    
+
     def get_name(self) -> str:
         """ Returns model name.
         """
         return self.name
-    
+
     def get_total_params(self) -> int:
         """ Returns number of model parameteres.
         """
@@ -49,7 +49,7 @@ class SetModel():
 
         if self.name == 'GCN':
             m = NodeClassifier(chunks, self.cfg_model.out_chunks, nodes, self.cfg_model.num_layers, F.relu, False, self.device)
-        
+
         elif self.name == 'EDGE':
             m = EdgeClassifier(edges, self.cfg_model.num_layers, self.cfg_model.dropout, chunks, self.cfg_model.out_chunks, self.cfg_model.hidden_dim, self.device, self.cfg_model.doProject)
 
@@ -59,7 +59,7 @@ class SetModel():
 
         else:
             raise Exception(f"Error! Model {self.name} do not exists.")
-        
+
         m.to(self.device)
         self.total_params = sum(p.numel() for p in m.parameters() if p.requires_grad)
         print(f"-> Total params: {self.total_params}")
@@ -92,19 +92,19 @@ class NodeClassifier(nn.Module):
 
         # mp layers
         for i in range(0, n_layers - 1):
-            self.layers.append(GcnSAGELayer(n_hidden, n_hidden, activation=activation, 
+            self.layers.append(GcnSAGELayer(n_hidden, n_hidden, activation=activation,
                         dropout=dropout, use_pp=False, use_lynorm=True))
 
         self.layers.append(GcnSAGELayer(n_hidden, n_classes, activation=None,
                                     dropout=False, use_pp=False, use_lynorm=False))
 
     def forward(self, g, h):
-        
+
         h = self.projector(h)
 
         for l in range(self.n_layers):
             h = self.layers[l](g, h)
-        
+
         return h
 
 ################
@@ -126,7 +126,7 @@ class EdgeClassifier(nn.Module):
             self.message_passing.append(GcnSAGELayer(m_hidden, m_hidden, F.relu, 0.))
 
         # Define edge predictori layer
-        self.edge_pred = MLPPredictor(m_hidden, hidden_dim, edge_classes, dropout)  
+        self.edge_pred = MLPPredictor(m_hidden, hidden_dim, edge_classes, dropout)
 
     def forward(self, g, h):
 
@@ -134,7 +134,7 @@ class EdgeClassifier(nn.Module):
 
         for l in range(self.m_layers):
             h = self.message_passing[l](g, h)
-        
+
         e = self.edge_pred(g, h)
 
         return e
@@ -143,13 +143,13 @@ class EdgeClassifier(nn.Module):
 ###### E2E #####
 
 class E2E(nn.Module):
-    def __init__(self, node_classes, 
-                       edge_classes, 
-                       m_layers, 
-                       dropout, 
-                       in_chunks, 
-                       out_chunks, 
-                       hidden_dim, 
+    def __init__(self, node_classes,
+                       edge_classes,
+                       m_layers,
+                       dropout,
+                       in_chunks,
+                       out_chunks,
+                       hidden_dim,
                        device,
                        edge_pred_features,
                        doProject=True):
@@ -184,7 +184,7 @@ class E2E(nn.Module):
         h = self.message_passing(g,h)
         n = self.node_pred(h)
         e = self.edge_pred(g, h, n)
-        
+
         return n, e
 
 ################
@@ -221,7 +221,7 @@ class GcnSAGELayer(nn.Module):
 
     def forward(self, g, h):
         g = g.local_var()
-        
+
         if not self.use_pp:
             # norm = self.get_norm(g)
             norm = g.ndata['norm']
@@ -254,7 +254,7 @@ class GcnSAGELayer(nn.Module):
 class InputProjector(nn.Module):
     def __init__(self, in_chunks : list, out_chunks : int, device, doIt = True) -> None:
         super().__init__()
-        
+
         if not doIt:
             self.output_length = sum(in_chunks)
             self.doIt = doIt
@@ -272,13 +272,13 @@ class InputProjector(nn.Module):
             chunk_module.append(nn.LayerNorm(out_chunks))
             chunk_module.append(nn.ReLU())
             modules.append(nn.Sequential(*chunk_module))
-        
+
         self.modalities = nn.Sequential(*modules)
         self.chunks.insert(0, 0)
-    
+
     def get_out_lenght(self):
         return self.output_length
-    
+
     def forward(self, h):
 
         if not self.doIt:
