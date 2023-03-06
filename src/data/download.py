@@ -12,11 +12,13 @@ from pathlib import Path
 
 from src.paths import CHECKPOINTS, DATA, DocLayNet_CACHE
 
+
 def download_url(url, save_path, chunk_size=128):
     r = requests.get(url, stream=True)
     with open(save_path, 'wb') as fd:
         for chunk in r.iter_content(chunk_size=chunk_size):
             fd.write(chunk)
+
 
 def funsd():
     print("Downloading FUNSD")
@@ -44,7 +46,6 @@ def funsd():
     # yolo_bbox
     yolo_train = os.path.join(DATA / 'yolo_bbox.zip')
 
-
     wget.download(url="https://docs.google.com/uc?export=download&id=1UzL5tYtBWDXk_nXj4KtoDMyBt7S3j-aS", out=yolo_train)
     with zipfile.ZipFile(yolo_train, 'r') as zip_ref:
         zip_ref.extractall(DATA / 'FUNSD/training_data')
@@ -58,8 +59,8 @@ def funsd():
 
     return
 
-def pau():
 
+def pau():
     print("Downloading PAU")
 
     PAU = DATA / 'PAU'
@@ -91,12 +92,12 @@ def pau():
     os.remove(dlz)
     return
 
-def doclaynet():
 
+def doclaynet():
     docLayNet = DATA / "DocLayNet"
     create_folder(docLayNet)
     create_folder(DocLayNet_CACHE)
-    dataset_large = load_dataset("pierreguillou/DocLayNet-small")
+    dataset_large = load_dataset("pierreguillou/DocLayNet-base")
 
     create_folder(docLayNet / 'train')
     create_folder(docLayNet / 'train' / 'json')
@@ -114,26 +115,24 @@ def doclaynet():
     # print(dataset_large)
 
     PDF_PATH = Path(
-        "/Users/apple/Desktop/workspace/projects/pdfextract/data/raw/PDF")
+        "/content/drive/MyDrive/data/DocLayNet/PDF")
 
     for k in dataset_large:
         for d in dataset_large[k]:
+            if (PDF_PATH / (d["page_hash"] + ".pdf")).exists():
+                # print(d.keys())
 
-            # print(d.keys())
+                image_content = d.pop("image")
+                image_content.save(docLayNet / k / 'png' / (d["page_hash"] + ".png"))
 
-            image_content = d.pop("image")
-            image_content.save(docLayNet / k / 'png' / (d["page_hash"]+".png"))
+                # pdf_content = d.pop("pdf")
+                # with open(docLayNet / k / 'pdf' / (d["page_hash"]+".pdf", "wb")) as wb:
+                #     wb.write(pdf_content)
 
-            # pdf_content = d.pop("pdf")
-            # with open(docLayNet / k / 'pdf' / (d["page_hash"]+".pdf", "wb")) as wb:
-            #     wb.write(pdf_content)
+                shutil.copyfile(PDF_PATH / (d["page_hash"] + ".pdf"), docLayNet / k / 'pdf' / (d["page_hash"] + ".pdf"))
 
-            shutil.copyfile(PDF_PATH / (d["page_hash"]+".pdf"), docLayNet / k / 'pdf' / (d["page_hash"]+".pdf"))
-
-            with open(docLayNet / k / 'json' / (d["page_hash"]+".json"), "w") as w:
-                w.write(json.dumps(d))
-
-
+                with open(docLayNet / k / 'json' / (d["page_hash"] + ".json"), "w") as w:
+                    w.write(json.dumps(d))
 
 
 def get_data():

@@ -14,7 +14,6 @@ _old
 *.env
 outputs
 FUDGE
-configs/preprocessing.yaml
 esempi
 examples
 src/models/yolov5

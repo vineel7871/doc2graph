@@ -1,6 +1,7 @@
 import json
 import os
-from uuid import uuid3
+import pickle
+
 from PIL import Image, ImageDraw
 from typing import Tuple
 import torch
@@ -14,7 +15,7 @@ from math import ceil, floor
 
 from src.data.preprocessing import load_predictions
 from src.data.utils import polar
-from src.paths import DATA, FUNSD_TEST
+from src.paths import DATA, FUNSD_TEST, DocLayNet_CACHE
 from src.utils import get_config
 
 
@@ -28,7 +29,7 @@ class GraphBuilder():
         random.seed = 42
         return
 
-    def get_graph(self, src_path : str, src_data : str) -> Tuple[list, list, list, list]:
+    def get_graph(self, src_path: str, src_data: str) -> Tuple[list, list, list, list]:
         """ Given the source, it returns a graph
 
         Args:
@@ -44,7 +45,18 @@ class GraphBuilder():
         elif src_data == 'PAU':
             return self.__fromPAU(src_path)
         elif src_data == "DocLayNet":
-            return self.__fromPDF(src_path)
+            if (DocLayNet_CACHE / "graphs.pickle").exists():
+                with open(DocLayNet_CACHE / "graphs.pickle", "rb") as rb:
+                    data = pickle.loads(rb.read())
+                    data.get_info()
+            else:
+                data = self.__fromPDF(src_path)
+                if not DocLayNet_CACHE.exists():
+                    os.makedirs(DocLayNet_CACHE)
+                with open(DocLayNet_CACHE / "graphs.pickle", "wb") as wb:
+                    wb.write(pickle.dumps(data))
+
+            return data
         elif src_data == 'CUSTOM':
             if self.data_type == 'img':
                 return self.__fromIMG()
@@ -55,7 +67,7 @@ class GraphBuilder():
         else:
             raise Exception('GraphBuilder exception: source data invalid. Choose from ["FUNSD", "PAU", "CUSTOM"]')
 
-    def balance_edges(self, g : dgl.DGLGraph, cls=None ) -> dgl.DGLGraph:
+    def balance_edges(self, g: dgl.DGLGraph, cls=None) -> dgl.DGLGraph:
         """ if cls (class) is not None, but an integer instead, balance that class to be equal to the sum of the other classes
 
         Args:
@@ -76,7 +88,7 @@ class GraphBuilder():
             to_remove = (edge_targets == cls)
             indices_to_remove = to_remove.nonzero().flatten().tolist()
 
-            for _ in range(int((edge_targets != cls).sum()/2)):
+            for _ in range(int((edge_targets != cls).sum() / 2)):
                 indeces_to_save = [random.choice(indices_to_remove)]
                 edge = edges_list[indeces_to_save[0]]
 
@@ -95,7 +107,7 @@ class GraphBuilder():
         """
         print(f"-> edge type: {self.edge_type}")
 
-    def fully_connected(self, ids : list) -> Tuple[list, list]:
+    def fully_connected(self, ids: list) -> Tuple[list, list]:
         """ create fully connected graph
 
         Args:
@@ -110,7 +122,7 @@ class GraphBuilder():
             v.extend([i for i in range(len(ids)) if i != id])
         return u, v
 
-    def __knn(self, size : tuple, bboxs : list, k = 10) -> Tuple[list, list]:
+    def __knn(self, size: tuple, bboxs: list, k=10) -> Tuple[list, list]:
         """ Given a list of bounding boxes, find for each of them their k nearest ones.
 
         Args:
@@ -137,33 +149,38 @@ class GraphBuilder():
                 horizontal_projections[vp].append(node_index)
 
         def bound(a, ori=''):
-            if a < 0 : return 0
-            elif ori == 'h' and a > height: return height
-            elif ori == 'w' and a > width: return width
-            else: return a
+            if a < 0:
+                return 0
+            elif ori == 'h' and a > height:
+                return height
+            elif ori == 'w' and a > width:
+                return width
+            else:
+                return a
 
         for node_index, node_bbox in enumerate(bboxs):
-            neighbors = [] # collect list of neighbors
-            window_multiplier = 2 # how much to look around bbox
-            wider = (node_bbox[2] - node_bbox[0]) > (node_bbox[3] - node_bbox[1]) # if bbox wider than taller
+            neighbors = []  # collect list of neighbors
+            window_multiplier = 2  # how much to look around bbox
+            wider = (node_bbox[2] - node_bbox[0]) > (node_bbox[3] - node_bbox[1])  # if bbox wider than taller
 
             ### finding neighbors ###
-            while(len(neighbors) < k and window_multiplier < 100): # keep enlarging the window until at least k bboxs are found or window too big
+            while (
+                    len(neighbors) < k and window_multiplier < 100):  # keep enlarging the window until at least k bboxs are found or window too big
                 vertical_bboxs = []
                 horizontal_bboxs = []
                 neighbors = []
 
                 if wider:
-                    h_offset = int((node_bbox[2] - node_bbox[0]) * window_multiplier/4)
+                    h_offset = int((node_bbox[2] - node_bbox[0]) * window_multiplier / 4)
                     v_offset = int((node_bbox[3] - node_bbox[1]) * window_multiplier)
                 else:
                     h_offset = int((node_bbox[2] - node_bbox[0]) * window_multiplier)
-                    v_offset = int((node_bbox[3] - node_bbox[1]) * window_multiplier/4)
+                    v_offset = int((node_bbox[3] - node_bbox[1]) * window_multiplier / 4)
 
                 window = [bound(node_bbox[0] - h_offset),
-                        bound(node_bbox[1] - v_offset),
-                        bound(node_bbox[2] + h_offset, 'w'),
-                        bound(node_bbox[3] + v_offset, 'h')]
+                          bound(node_bbox[1] - v_offset),
+                          bound(node_bbox[2] + h_offset, 'w'),
+                          bound(node_bbox[3] + v_offset, 'h')]
 
                 [vertical_bboxs.extend(d) for d in vertical_projections[window[0]:window[2]]]
                 [horizontal_bboxs.extend(d) for d in horizontal_projections[window[1]:window[3]]]
@@ -172,7 +189,7 @@ class GraphBuilder():
                     for h in set(horizontal_bboxs):
                         if v == h: neighbors.append(v)
 
-                window_multiplier += 1 # enlarge the window
+                window_multiplier += 1  # enlarge the window
 
             ### finding k nearest neighbors ###
             neighbors = list(set(neighbors))
@@ -184,16 +201,17 @@ class GraphBuilder():
                     if [node_index, neighbors[sd_idx]] not in edges and [neighbors[sd_idx], node_index] not in edges:
                         edges.append([neighbors[sd_idx], node_index])
                         edges.append([node_index, neighbors[sd_idx]])
-                else: break
+                else:
+                    break
 
         return [e[0] for e in edges], [e[1] for e in edges]
 
     def __fromIMG():
-        #TODO: dev from IMG import of graphs
+        # TODO: dev from IMG import of graphs
         return
 
-    def __fromPDF(self, src:str):
-        #TODO: dev from PDF import of graphs
+    def __fromPDF(self, src: str):
+        # TODO: dev from PDF import of graphs
         graphs, node_labels, edge_labels = list(), list(), list()
         features = {'paths': [], 'texts': [], 'boxs': []}
 
@@ -218,38 +236,51 @@ class GraphBuilder():
 
                     bbox_set = set()
 
-                    for i, x in enumerate(data["bboxes_block"]):
+                    for i, x in enumerate(data["bboxes_line"]):
                         if tuple(x) not in bbox_set:
-                            if (data["categories"][i]!=6):
-                                bbox_set.add(tuple(x))
-                                bbox = x.copy()
-                                w = data["original_width"]
-                                h = data["original_height"]
-                                wm = w/1025
-                                hm = h/1025
+                            if (data["categories"][i] != 6):
 
-                                bbox[2] += bbox[0]
-                                bbox[3] += bbox[1]
+                                try:
 
-                                bbox[0] *= wm
-                                bbox[2] *= wm
-                                bbox[1] *= hm
-                                bbox[3] *= hm
+                                    bbox_set.add(tuple(x))
+                                    bbox = x.copy()
+                                    w = data["original_width"]
+                                    h = data["original_height"]
+                                    wm = w / 1025
+                                    hm = h / 1025
 
-                                for j, word in enumerate(page.crop(bbox, strict=True).extract_words()):
+                                    bbox[2] += bbox[0]
+                                    bbox[3] += bbox[1]
 
-                                    boxs.append((floor(word["x0"] * 1025 / w), floor(word["top"] * 1025 / h), floor(
-                                        word["x1"] * 1025 / w), floor(word["bottom"] * 1025 / h)))
-                                    texts.append(word["text"])
-                                    ids.append(f'{file.split(".")[0]}_{len(bbox_set)}_{j}')
+                                    bbox[0] *= wm
+                                    bbox[2] *= wm
+                                    bbox[1] *= hm
+                                    bbox[3] *= hm
+
+                                    # for j, word in enumerate(page.crop(bbox, strict=True).extract_words()):
+
+                                    t = page.crop(bbox, strict=True).extract_text()
+
+                                    boxs.append((floor(bbox[0]), floor(bbox[1]), floor(bbox[2]), floor(bbox[3])))
+                                    texts.append(t)
+                                    ids.append(
+                                        f'{file.split(".")[0]}_{len(bbox_set)}_{0}')
                                     nl.append(data["categories"][i])
+                                    pair_labels.append([i - 1, i])
+                                    pair_labels.append([i, i - 1])
+
+                                except Exception as e:
+                                    print("error for file", file)
+                                    print("skipping bounding box", e)
+
                             else:
+
                                 bbox_set.add(tuple(x))
                                 bbox = x.copy()
                                 w = data["original_width"]
                                 h = data["original_height"]
-                                wm = w/1025
-                                hm = h/1025
+                                wm = w / 1025
+                                hm = h / 1025
 
                                 bbox[2] += bbox[0]
                                 bbox[3] += bbox[1]
@@ -259,8 +290,7 @@ class GraphBuilder():
                                 bbox[1] *= hm
                                 bbox[3] *= hm
 
-                                boxs.append((floor(word["x0"] * 1025 / w), floor(word["top"] * 1025 / h), floor(
-                                    word["x1"] * 1025 / w), floor(word["bottom"] * 1025 / h)))
+                                boxs.append((floor(bbox[0]), floor(bbox[1]), floor(bbox[2]), floor(bbox[3])))
                                 texts.append("image")
                                 ids.append(
                                     f'{file.split(".")[0]}_{len(bbox_set)}_0')
@@ -276,18 +306,20 @@ class GraphBuilder():
                     elif self.edge_type == 'knn':
                         u, v = self.__knn(Image.open(img_path).size, boxs)
                     else:
-                        raise Exception('GraphBuilder exception: Other edge types still under development.')
+                        raise Exception(
+                            'GraphBuilder exception: Other edge types still under development.')
 
                     el = list()
                     for e in zip(u, v):
                         edge = [e[0], e[1]]
                         if edge in pair_labels:
                             el.append('pair')
-                        else: el.append('none')
+                        else:
+                            el.append('none')
                     edge_labels.append(el)
 
                     g = dgl.graph((torch.tensor(u), torch.tensor(v)),
-                                num_nodes=len(boxs), idtype=torch.int32)
+                                  num_nodes=len(boxs), idtype=torch.int32)
                     graphs.append(g)
                 except Exception as e:
                     print("error for file", file)
@@ -315,7 +347,8 @@ class GraphBuilder():
             file_gt = img_name + '_gt.xml'
             file_ocr = img_name + '_ocr.xml'
 
-            if not os.path.isfile(os.path.join(src, file_gt)) or not os.path.isfile(os.path.join(src, file_ocr)): continue
+            if not os.path.isfile(os.path.join(src, file_gt)) or not os.path.isfile(
+                os.path.join(src, file_ocr)): continue
             features['paths'].append(os.path.join(src, image))
 
             # DOCUMENT REGIONS
@@ -326,9 +359,9 @@ class GraphBuilder():
                     for child in parent:
                         region_label = child[0].attrib['value']
                         region_bbox = [int(child[1].attrib['points'].split(" ")[0].split(",")[0].split(".")[0]),
-                                    int(child[1].attrib['points'].split(" ")[1].split(",")[1].split(".")[0]),
-                                    int(child[1].attrib['points'].split(" ")[2].split(",")[0].split(".")[0]),
-                                    int(child[1].attrib['points'].split(" ")[3].split(",")[1].split(".")[0])]
+                                       int(child[1].attrib['points'].split(" ")[1].split(",")[1].split(".")[0]),
+                                       int(child[1].attrib['points'].split(" ")[2].split(",")[0].split(".")[0]),
+                                       int(child[1].attrib['points'].split(" ")[3].split(",")[1].split(".")[0])]
                         regions.append([region_label, region_bbox])
 
             # DOCUMENT TOKENS
@@ -336,7 +369,7 @@ class GraphBuilder():
             tokens_bbox = []
             tokens_text = []
             nl = []
-            center = lambda rect: ((rect[2]+rect[0])/2, (rect[3]+rect[1])/2)
+            center = lambda rect: ((rect[2] + rect[0]) / 2, (rect[3] + rect[1]) / 2)
             for parent in root:
                 if parent.tag.split("}")[1] == 'Page':
                     for child in parent:
@@ -345,10 +378,11 @@ class GraphBuilder():
                                 if elem.tag.split("}")[1] == 'TextLine':
                                     for word in elem:
                                         if word.tag.split("}")[1] == 'Word':
-                                            word_bbox = [int(word[0].attrib['points'].split(" ")[0].split(",")[0].split(".")[0]),
-                                                        int(word[0].attrib['points'].split(" ")[1].split(",")[1].split(".")[0]),
-                                                        int(word[0].attrib['points'].split(" ")[2].split(",")[0].split(".")[0]),
-                                                        int(word[0].attrib['points'].split(" ")[3].split(",")[1].split(".")[0])]
+                                            word_bbox = [
+                                                int(word[0].attrib['points'].split(" ")[0].split(",")[0].split(".")[0]),
+                                                int(word[0].attrib['points'].split(" ")[1].split(",")[1].split(".")[0]),
+                                                int(word[0].attrib['points'].split(" ")[2].split(",")[0].split(".")[0]),
+                                                int(word[0].attrib['points'].split(" ")[3].split(",")[1].split(".")[0])]
                                             word_text = word[1][0].text
                                             c = center(word_bbox)
                                             for reg in regions:
@@ -364,11 +398,11 @@ class GraphBuilder():
             features['texts'].append(tokens_text)
             node_labels.append(nl)
 
-            # getting edges
+            #  getting edges
             if self.edge_type == 'fully':
                 u, v = self.fully_connected(range(len(tokens_bbox)))
             elif self.edge_type == 'knn':
-                u,v = self.__knn(Image.open(os.path.join(src, image)).size, tokens_bbox)
+                u, v = self.__knn(Image.open(os.path.join(src, image)).size, tokens_bbox)
             else:
                 raise Exception('Other edge types still under development.')
 
@@ -376,7 +410,8 @@ class GraphBuilder():
             for e in zip(u, v):
                 if (nl[e[0]] == nl[e[1]]) and (nl[e[0]] == 'positions' or nl[e[0]] == 'total'):
                     el.append('table')
-                else: el.append('none')
+                else:
+                    el.append('none')
             edge_labels.append(el)
 
             g = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=len(tokens_bbox), idtype=torch.int32)
@@ -384,7 +419,7 @@ class GraphBuilder():
 
         return graphs, node_labels, edge_labels, features
 
-    def __fromFUNSD(self, src : str) -> Tuple[list, list, list, list]:
+    def __fromFUNSD(self, src: str) -> Tuple[list, list, list, list]:
         """Parsing FUNSD annotation files
 
         Args:
@@ -426,26 +461,28 @@ class GraphBuilder():
                 features['texts'].append(texts)
                 features['boxs'].append(boxs)
 
-                # getting edges
+                #  getting edges
                 if self.edge_type == 'fully':
                     u, v = self.fully_connected(range(len(boxs)))
                 elif self.edge_type == 'knn':
-                    u,v = self.__knn(Image.open(img_path).size, boxs)
+                    u, v = self.__knn(Image.open(img_path).size, boxs)
                 else:
                     raise Exception('GraphBuilder exception: Other edge types still under development.')
 
                 el = list()
                 for e in zip(u, v):
                     edge = [e[0], e[1]]
-                    if edge in pair_labels: el.append('pair')
-                    else: el.append('none')
+                    if edge in pair_labels:
+                        el.append('pair')
+                    else:
+                        el.append('none')
                 edge_labels.append(el)
 
                 # creating graph
                 g = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=len(boxs), idtype=torch.int32)
                 graphs.append(g)
 
-            #! DEBUG PURPOSES TO VISUALIZE RANDOM GRAPH IMAGE FROM DATASET
+            # ! DEBUG PURPOSES TO VISUALIZE RANDOM GRAPH IMAGE FROM DATASET
             if False:
                 if justOne == file.split(".")[0]:
                     print("\n\n### EXAMPLE ###")
@@ -474,23 +511,25 @@ class GraphBuilder():
                     labels = g.edata['label'].tolist()
                     u, v = u.tolist(), v.tolist()
 
-                    center = lambda rect: ((rect[2]+rect[0])/2, (rect[3]+rect[1])/2)
+                    center = lambda rect: ((rect[2] + rect[0]) / 2, (rect[3] + rect[1]) / 2)
 
                     num_pair = 0
                     num_none = 0
 
-                    for p, pair in enumerate(zip(u,v)):
+                    for p, pair in enumerate(zip(u, v)):
                         sc = center(boxs[pair[0]])
                         ec = center(boxs[pair[1]])
                         if labels[p] == int(np.where('pair' == edge_unique_labels)[0][0]):
                             num_pair += 1
                             color = 'violet'
-                            draw_removed.ellipse([(sc[0]-4,sc[1]-4), (sc[0]+4,sc[1]+4)], fill = 'green', outline='black')
-                            draw_removed.ellipse([(ec[0]-4,ec[1]-4), (ec[0]+4,ec[1]+4)], fill = 'red', outline='black')
+                            draw_removed.ellipse([(sc[0] - 4, sc[1] - 4), (sc[0] + 4, sc[1] + 4)], fill='green',
+                                                 outline='black')
+                            draw_removed.ellipse([(ec[0] - 4, ec[1] - 4), (ec[0] + 4, ec[1] + 4)], fill='red',
+                                                 outline='black')
                         else:
                             num_none += 1
-                            color='gray'
-                        draw_removed.line((sc,ec), fill=color, width=3)
+                            color = 'gray'
+                        draw_removed.line((sc, ec), fill=color, width=3)
 
                     print("Balanced Links: None {} | Key-Value {}".format(num_none, num_pair))
                     img_removed.save(f'esempi/FUNSD/{img_name}_removed_graph.png')
@@ -508,27 +547,29 @@ class GraphBuilder():
                 node_labels.append(all_labels[f])
                 pair_labels = all_links[f]
 
-                # getting edges
+                #  getting edges
                 if self.edge_type == 'fully':
                     u, v = self.fully_connected(range(len(features['boxs'][f])))
                 elif self.edge_type == 'knn':
-                    u,v = self.__knn(Image.open(img_path).size, features['boxs'][f])
+                    u, v = self.__knn(Image.open(img_path).size, features['boxs'][f])
                 else:
                     raise Exception('GraphBuilder exception: Other edge types still under development.')
 
                 el = list()
                 for e in zip(u, v):
                     edge = [e[0], e[1]]
-                    if edge in pair_labels: el.append('pair')
-                    else: el.append('none')
+                    if edge in pair_labels:
+                        el.append('pair')
+                    else:
+                        el.append('none')
                 edge_labels.append(el)
 
                 # creating graph
-                g = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=len(features['boxs'][f]), idtype=torch.int32)
+                g = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=len(features['boxs'][f]),
+                              idtype=torch.int32)
                 graphs.append(g)
         else:
-            #TODO develop OCR too
+            # TODO develop OCR too
             raise Exception('GraphBuilder Exception: only \'gt\' or \'yolo\' available for FUNSD.')
-
 
         return graphs, node_labels, edge_labels, features
