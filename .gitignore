@@ -17,6 +17,7 @@ FUDGE
 esempi
 examples
 src/models/yolov5
+src/models/checkpoints.zip
 src/models/checkpoints
 prova*
 notebooks
